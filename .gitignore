@@ -1,0 +1,59 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+terraform.tfplan
+tfplan
+
+# AWS and sensitive data
+.aws/
+*.pem
+*.key
+*.crt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+*.tmp
+
+# Results and evidence 
+# Uncomment these lines for repositories:
+results/
+*.json
+*.csv
+FINAL_PROJECT_REPORT.md
+README.md
+shallwe.md

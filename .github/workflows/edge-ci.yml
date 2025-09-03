@@ -1,0 +1,402 @@
+name: Edge Security CI/CD Pipeline
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'terraform/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+env:
+  TF_VERSION: 1.5.0
+  AWS_REGION: us-east-1
+
+jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      terraform: ${{ steps.filter.outputs.terraform }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Paths filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            terraform:
+              - 'terraform/**'
+            scripts:
+              - 'scripts/**'
+            workflows:
+              - '.github/workflows/**'
+  security-scan:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    needs: changes
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    if: needs.changes.outputs.terraform == 'true' || needs.changes.outputs.scripts == 'true' || needs.changes.outputs.workflows == 'true'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Terraform Format Check
+      id: fmt
+      run: terraform fmt -check -recursive
+      working-directory: terraform
+      continue-on-error: true
+
+    - name: Terraform Init
+      id: init
+      run: terraform init -backend=false
+      working-directory: terraform
+
+    - name: Terraform Validate
+      id: validate
+      run: terraform validate -no-color
+      working-directory: terraform
+
+    - name: Run tfsec Security Scanner
+      id: tfsec
+      uses: aquasecurity/tfsec-action@v1
+      with:
+        working_directory: terraform
+        format: sarif
+        sarif_file: tfsec.sarif
+        soft_fail: true
+        
+    - name: Upload tfsec SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: tfsec.sarif
+
+    - name: Run Checkov Security Scanner
+      id: checkov
+      uses: bridgecrewio/checkov-action@v12
+      with:
+        directory: terraform
+        framework: terraform
+        output_format: sarif
+        output_file_path: checkov.sarif
+        soft_fail: true
+
+    - name: Upload Checkov SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: checkov.sarif
+
+    - name: Security Scan Summary
+      if: always()
+      run: |
+        echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
+        echo "| Tool | Status | Issues |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+        echo "| tfsec | ${{ steps.tfsec.outcome }} | Check Security tab |" >> $GITHUB_STEP_SUMMARY
+        echo "| Checkov | ${{ steps.checkov.outcome }} | Check Security tab |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Note**: Review security findings in the Security tab before deployment." >> $GITHUB_STEP_SUMMARY
+
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: [changes, security-scan]
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    if: needs.changes.outputs.terraform == 'true'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS Credentials (OIDC)
+      if: secrets.AWS_ROLE_TO_ASSUME != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure AWS Credentials (access keys)
+      if: secrets.AWS_ROLE_TO_ASSUME == ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Terraform Init
+      id: init
+      run: terraform init
+      working-directory: terraform
+
+    - name: Terraform Plan
+      id: plan
+      run: |
+        terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+        echo "PLAN_EXIT_CODE=${PIPESTATUS[0]}" >> $GITHUB_ENV
+      working-directory: terraform
+      continue-on-error: true
+
+    - name: Generate Plan Summary
+      id: plan-summary
+      run: |
+        cd terraform
+        # Extract key metrics from plan line
+        PLAN_LINE=$(grep -Eo 'Plan: [0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy\.' plan_output.txt || echo "")
+        ADD=$(echo "$PLAN_LINE" | grep -Eo '[0-9]+ to add' | awk '{print $1}')
+        CHANGE=$(echo "$PLAN_LINE" | grep -Eo '[0-9]+ to change' | awk '{print $1}')
+        DESTROY=$(echo "$PLAN_LINE" | grep -Eo '[0-9]+ to destroy' | awk '{print $1}')
+        RESOURCES_TO_ADD=${ADD:-0}
+        RESOURCES_TO_CHANGE=${CHANGE:-0}
+        RESOURCES_TO_DESTROY=${DESTROY:-0}
+        
+        # Create summary
+        cat > plan_summary.md << EOF
+        ## Terraform Plan Summary
+        
+        **Plan Status**: ${{ env.PLAN_EXIT_CODE == '0' && 'Success' || 'Failed' }}
+        
+        ### Resource Changes
+        - **Add**: ${RESOURCES_TO_ADD} resources
+        - **Change**: ${RESOURCES_TO_CHANGE} resources  
+        - **Destroy**: ${RESOURCES_TO_DESTROY} resources
+        
+        ### Security Resources
+        $(grep -A 5 -B 5 "aws_wafv2\|aws_security_group\|aws_iam" plan_output.txt | head -20 || echo "No security resource changes detected")
+        
+        ### Full Plan Output
+        <details>
+        <summary>Click to expand full terraform plan</summary>
+        
+        \`\`\`terraform
+        $(cat plan_output.txt)
+        \`\`\`
+        
+        </details>
+        
+        ---
+        
+        Manual Approval Required: A security team member must review and approve this plan before deployment.
+        
+        ### Pre-Deployment Checklist
+        - [ ] Security scan results reviewed
+        - [ ] WAF rules validated
+        - [ ] Resource changes approved
+        - [ ] Compliance requirements met
+        EOF
+
+    - name: Upload plan artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: terraform-plan
+        path: |
+          terraform/plan_output.txt
+          terraform/tfplan
+
+    - name: Comment PR with Plan
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      with:
+        script: |
+          const fs = require('fs');
+          const plan = fs.readFileSync('terraform/plan_summary.md', 'utf8');
+          
+          // Find existing comment
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          
+          const botComment = comments.find(comment => 
+            comment.user.type === 'Bot' && 
+            comment.body.includes('Terraform Plan Summary')
+          );
+          
+          if (botComment) {
+            // Update existing comment
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: botComment.id,
+              body: plan
+            });
+          } else {
+            // Create new comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: plan
+            });
+          }
+
+  cost-analysis:
+    name: Cost Analysis
+    runs-on: ubuntu-latest
+    needs: [changes, terraform-plan]
+    permissions:
+      contents: read
+      pull-requests: write
+    if: needs.changes.outputs.terraform == 'true'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS Credentials (OIDC)
+      if: secrets.AWS_ROLE_TO_ASSUME != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure AWS Credentials (access keys)
+      if: secrets.AWS_ROLE_TO_ASSUME == ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Infracost
+      uses: infracost/actions/setup@v2
+      with:
+        api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+    - name: Generate Infracost JSON
+      run: |
+        cd terraform
+        terraform init -backend=false
+        infracost breakdown --path . --format json --out-file /tmp/infracost.json
+      continue-on-error: true
+
+    - name: Post Infracost comment
+      if: github.event_name == 'pull_request'
+      run: |
+        infracost comment github --path /tmp/infracost.json \
+          --repo $GITHUB_REPOSITORY \
+          --github-token ${{ secrets.GITHUB_TOKEN }} \
+          --pull-request ${{ github.event.pull_request.number }} \
+          --behavior update
+      continue-on-error: true
+
+  manual-approval-gate:
+    name: Manual Approval Required
+    runs-on: ubuntu-latest
+    needs: [security-scan, terraform-plan, cost-analysis]
+    if: github.event_name == 'pull_request'
+    environment: production-approval
+    
+    steps:
+    - name: Manual Approval Gate
+      run: |
+        echo "Manual approval required for deployment"
+        echo "Security team must review:"
+        echo "- Security scan results"
+        echo "- Terraform plan changes"
+        echo "- Cost implications"
+        echo "- WAF rule modifications"
+        echo ""
+        echo "This step simulates a manual approval process."
+        echo "In a real environment, this would pause for human review."
+
+  terraform-apply:
+    name: Terraform Apply (Gated)
+    runs-on: ubuntu-latest
+    needs: manual-approval-gate
+    if: github.event_name == 'pull_request' && needs.changes.outputs.terraform == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS Credentials (OIDC)
+        if: secrets.AWS_ROLE_TO_ASSUME != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS Credentials (access keys)
+        if: secrets.AWS_ROLE_TO_ASSUME == ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: terraform
+
+  notification:
+    name: Notification
+    runs-on: ubuntu-latest
+    needs: [security-scan, terraform-plan, cost-analysis, terraform-apply]
+    if: always()
+    
+    steps:
+    - name: Workflow Summary
+      run: |
+        echo "## Edge Security CI/CD Pipeline Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Job Status" >> $GITHUB_STEP_SUMMARY
+        echo "- Security Scan: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Terraform Plan: ${{ needs.terraform-plan.result }}" >> $GITHUB_STEP_SUMMARY  
+        echo "- Cost Analysis: ${{ needs.cost-analysis.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Apply: ${{ needs.terraform-apply.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ needs.security-scan.result }}" == "success" && "${{ needs.terraform-plan.result }}" == "success" ]]; then
+          echo "Ready for manual review and approval" >> $GITHUB_STEP_SUMMARY
+          echo "- Review security findings in Security tab" >> $GITHUB_STEP_SUMMARY
+          echo "- Validate terraform plan in PR comments" >> $GITHUB_STEP_SUMMARY
+          echo "- Approve deployment when ready" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Pipeline failed - address issues before deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- Fix any security violations" >> $GITHUB_STEP_SUMMARY
+          echo "- Resolve terraform plan errors" >> $GITHUB_STEP_SUMMARY
+          echo "- Re-run pipeline" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "*Automated by Edge Security CI/CD Pipeline*" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,63 @@
+# =====================================================
+# Terraform Configuration Variables Example
+# =====================================================
+# 
+# Copy this file to terraform.tfvars and customize for your environment
+# cp terraform.tfvars.example terraform.tfvars
+# 
+# IMPORTANT: Never commit terraform.tfvars to version control
+# Add terraform.tfvars to your .gitignore file
+# =====================================================
+
+# AWS Configuration
+aws_region = "us-east-1"
+environment = "production"
+project_name = "juice-shop"
+
+# Application Configuration
+container_port = 3000
+desired_count = 2
+cpu = 512
+memory = 1024
+
+# Security Configuration
+allowed_cidr_blocks = [
+  "0.0.0.0/0"  # WARNING: Restrict this for production use
+  # Examples for restricted access:
+  # "203.0.113.0/24",    # Office network
+  # "198.51.100.0/24",   # VPN network  
+  # "192.0.2.0/24"       # Partner network
+]
+
+# WAF and Logging
+enable_waf_logging = true
+log_retention_days = 30
+
+# WAF rate limiting (requests/IP per 5 minutes)
+# Keep low for tests; tune higher for production
+# rate_limit_per_5_minutes = 50
+
+# HTTPS Configuration (optional)
+# ssl_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/12345678-1234-1234-1234-123456789012"
+# enable_https_redirect = true
+
+# Example production configuration:
+# =====================================================
+# aws_region = "us-west-2"
+# environment = "production"
+# project_name = "juice-shop-prod"
+# 
+# # Scaled for production traffic
+# desired_count = 4
+# cpu = 1024
+# memory = 2048
+# 
+# # Restricted access
+# allowed_cidr_blocks = [
+#   "203.0.113.0/24",  # Corporate network
+#   "198.51.100.0/24"  # VPN access
+# ]
+# 
+# # Extended logging for compliance
+# enable_waf_logging = true
+# log_retention_days = 90
