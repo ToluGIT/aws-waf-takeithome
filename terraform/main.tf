@@ -557,7 +557,7 @@ resource "aws_iam_role_policy" "firehose_delivery_policy" {
   })
 }
 
-# WAF Module
+# WAF Module - test ci
 module "edge_waf" {
   source = "./modules/edge_waf"
 
