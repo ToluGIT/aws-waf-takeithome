@@ -72,7 +72,7 @@ jobs:
 
     - name: Run tfsec Security Scanner
       id: tfsec
-      uses: aquasecurity/tfsec-action@v1
+      uses: aquasecurity/tfsec-action@v1.0.3
       with:
         working_directory: terraform
         format: sarif
