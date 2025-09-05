@@ -12,12 +12,10 @@ terraform {
     }
   }
 
-  # Uncomment for remote state management
-  # backend "s3" {
-  #   bucket = "your-terraform-state-bucket"
-  #   key    = "juice-shop/terraform.tfstate"
-  #   region = "us-east-1"
-  # }
+  # Remote state management
+  backend "s3" {
+    # Configuration provided via -backend-config in workflows
+  }
 }
 
 provider "aws" {
