@@ -252,6 +252,7 @@ jobs:
     needs: [changes, terraform-plan]
     permissions:
       contents: read
+      id-token: write
       pull-requests: write
     if: needs.changes.outputs.terraform == 'true'
 

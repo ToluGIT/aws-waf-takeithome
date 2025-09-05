@@ -29,7 +29,7 @@ variable "kinesis_firehose_arn" {
 variable "rate_limit_per_5_minutes" {
   description = "Rate limit per 5 minutes per IP"
   type        = number
-  default     = 50  # Lowered for better testing of rate limiting
+  default     = 50 # Lowered for better testing of rate limiting
 }
 
 variable "allowed_countries" {
