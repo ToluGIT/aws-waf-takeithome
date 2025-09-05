@@ -77,17 +77,16 @@ jobs:
       with:
         working_directory: terraform
         format: sarif
-        sarif_file: tfsec.sarif
         soft_fail: true
       continue-on-error: true
         
     - name: Upload tfsec SARIF
-      if: always() && hashFiles('tfsec.sarif') != ''
+      if: always() && hashFiles('results.sarif') != ''
       uses: github/codeql-action/upload-sarif@v3
       with:
-        sarif_file: tfsec.sarif
+        sarif_file: results.sarif
 
-    - name: Run Checkov Security Scanner
+    - name: Run Checkov Security Scanner (SARIF)
       id: checkov
       uses: bridgecrewio/checkov-action@v12
       with:
@@ -98,30 +97,42 @@ jobs:
         soft_fail: true
       continue-on-error: true
 
+    - name: Run Checkov Security Scanner (Table)
+      id: checkov-table
+      uses: bridgecrewio/checkov-action@v12
+      with:
+        directory: terraform
+        framework: terraform
+        output_format: cli
+        output_file_path: security-reports/checkov-table.txt
+        soft_fail: true
+      continue-on-error: true
+
     - name: Upload Checkov SARIF
       if: always() && hashFiles('checkov.sarif') != ''
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: checkov.sarif
 
-    - name: Generate Text Reports for Screenshots
+    - name: Run tfsec for Table Output
+      if: always()
+      uses: aquasecurity/tfsec-action@v1.0.3
+      with:
+        working_directory: terraform
+        format: default
+        additional_args: --no-color
+      continue-on-error: true
+
+    - name: Prepare Security Reports
       if: always()
       run: |
         mkdir -p security-reports
-        
-        # Generate tfsec text report
-        echo "tfsec Security Scan Report" > security-reports/tfsec-report.txt
-        echo "Generated: $(date)" >> security-reports/tfsec-report.txt
-        echo "Status: ${{ steps.tfsec.outcome }}" >> security-reports/tfsec-report.txt
-        echo "----------------------------------------" >> security-reports/tfsec-report.txt
-        tfsec terraform --no-color >> security-reports/tfsec-report.txt 2>&1 || true
-        
-        # Generate Checkov text report
-        echo "Checkov Security Scan Report" > security-reports/checkov-report.txt
-        echo "Generated: $(date)" >> security-reports/checkov-report.txt  
-        echo "Status: ${{ steps.checkov.outcome }}" >> security-reports/checkov-report.txt
-        echo "----------------------------------------" >> security-reports/checkov-report.txt
-        checkov -d terraform --framework terraform --output cli >> security-reports/checkov-report.txt 2>&1 || true
+        echo "Security scan artifacts generated for download" > security-reports/README.txt
+        echo "Generated: $(date)" >> security-reports/README.txt
+        echo "" >> security-reports/README.txt
+        echo "Files:" >> security-reports/README.txt
+        echo "- tfsec results: Check step output above" >> security-reports/README.txt
+        echo "- checkov-table.txt: Checkov CLI output" >> security-reports/README.txt
 
     - name: Upload Security Reports Artifact
       if: always()
