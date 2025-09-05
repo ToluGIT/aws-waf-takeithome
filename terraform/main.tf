@@ -557,7 +557,7 @@ resource "aws_iam_role_policy" "firehose_delivery_policy" {
   })
 }
 
-# WAF Module - test ci trigger - softfail
+# WAF Module - test ci trigger - 1
 module "edge_waf" {
   source = "./modules/edge_waf"
 
