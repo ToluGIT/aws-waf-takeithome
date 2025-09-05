@@ -12,6 +12,7 @@ on:
 env:
   TF_VERSION: 1.5.0
   AWS_REGION: us-east-1
+  TF_STATE_KEY: juice-shop/terraform.tfstate
 
 jobs:
   changes:
@@ -103,6 +104,33 @@ jobs:
       with:
         sarif_file: checkov.sarif
 
+    - name: Generate Text Reports for Screenshots
+      if: always()
+      run: |
+        mkdir -p security-reports
+        
+        # Generate tfsec text report
+        echo "tfsec Security Scan Report" > security-reports/tfsec-report.txt
+        echo "Generated: $(date)" >> security-reports/tfsec-report.txt
+        echo "Status: ${{ steps.tfsec.outcome }}" >> security-reports/tfsec-report.txt
+        echo "----------------------------------------" >> security-reports/tfsec-report.txt
+        tfsec terraform --no-color >> security-reports/tfsec-report.txt 2>&1 || true
+        
+        # Generate Checkov text report
+        echo "Checkov Security Scan Report" > security-reports/checkov-report.txt
+        echo "Generated: $(date)" >> security-reports/checkov-report.txt  
+        echo "Status: ${{ steps.checkov.outcome }}" >> security-reports/checkov-report.txt
+        echo "----------------------------------------" >> security-reports/checkov-report.txt
+        checkov -d terraform --framework terraform --output cli >> security-reports/checkov-report.txt 2>&1 || true
+
+    - name: Upload Security Reports Artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-scan-reports
+        path: security-reports/
+        retention-days: 30
+
     - name: Security Scan Summary
       if: always()
       run: |
@@ -141,7 +169,13 @@ jobs:
 
     - name: Terraform Init
       id: init
-      run: terraform init
+      run: |
+        terraform init -reconfigure \
+          -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+          -backend-config="key=${{ env.TF_STATE_KEY }}" \
+          -backend-config="region=${{ env.AWS_REGION }}" \
+          -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+          -backend-config="encrypt=true"
       working-directory: terraform
 
     - name: Terraform Plan
@@ -278,20 +312,32 @@ jobs:
 
     - name: Generate Infracost JSON
       run: |
-        cd terraform
-        terraform init -backend=false
-        infracost breakdown --path . --format json --out-file /tmp/infracost.json
+        terraform init -backend=false -chdir=terraform
+        infracost breakdown --path terraform --format json --out-file infracost.json
       continue-on-error: true
 
     - name: Post Infracost comment
       if: github.event_name == 'pull_request'
       run: |
-        infracost comment github --path /tmp/infracost.json \
+        infracost comment github --path infracost.json \
           --repo $GITHUB_REPOSITORY \
           --github-token ${{ secrets.GITHUB_TOKEN }} \
           --pull-request ${{ github.event.pull_request.number }} \
           --behavior update
       continue-on-error: true
+
+    - name: Upload Infracost artifact
+      if: always() && hashFiles('infracost.json') != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: infracost.json
+        path: infracost.json
+
+    - name: Cost Summary
+      if: always() && hashFiles('infracost.json') != ''
+      run: |
+        echo "## Infracost Summary" >> $GITHUB_STEP_SUMMARY
+        infracost output --path infracost.json --format table >> $GITHUB_STEP_SUMMARY
 
   manual-approval-gate:
     name: Manual Approval Required
@@ -337,7 +383,13 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
-        run: terraform init
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
         working-directory: terraform
 
       - name: Terraform Apply

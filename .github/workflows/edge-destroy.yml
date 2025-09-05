@@ -11,6 +11,7 @@ on:
 env:
   TF_VERSION: 1.5.0
   AWS_REGION: us-east-1
+  TF_STATE_KEY: juice-shop/terraform.tfstate
 
 jobs:
   guard:
@@ -48,10 +49,15 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
-        run: terraform init -input=false
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
         working-directory: terraform
 
       - name: Terraform Destroy
         run: terraform destroy -auto-approve -input=false
         working-directory: terraform
-
